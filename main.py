@@ -169,33 +169,33 @@ def send_telegram_document(md_content: str, filename: str = "nse_report.md"):
 # ============================================================================
 # 3. CORE NSE LOGIC (Condensed from original script)
 # ============================================================================
-def _nse_date(d: dt.date) -> str: 
+def _nse_date(d: dt.date) -> str:
     return d.strftime("%d-%m-%Y")
 
 def _parse_date(value: Any) -> dt.date | None:
-    if value is None: 
+    if value is None:
         return None
-    if isinstance(value, dt.date): 
+    if isinstance(value, dt.date):
         return value
     s = str(value).strip()
     for fmt in ("%d-%b-%Y", "%d-%m-%Y", "%Y-%m-%d"):
-        try: 
+        try:
             return dt.datetime.strptime(s, fmt).date()
-        except ValueError: 
+        except ValueError:
             continue
     return None
 
 def _num(value: Any) -> float:
-    if value is None or value == "" or value == "-": 
+    if value is None or value == "" or value == "-":
         return float("nan")
-    try: 
+    try:
         return float(str(value).replace(",", ""))
-    except ValueError: 
+    except ValueError:
         return float("nan")
 
 def _pick(row: dict, *keys: str, default: Any = None) -> Any:
     for k in keys:
-        if k in row and row[k] not in (None, ""): 
+        if k in row and row[k] not in (None, ""):
             return row[k]
     return default
 
@@ -345,7 +345,7 @@ def run_daily_job():
         send_telegram_summary(f" *Bot Error:* Daily research job failed.\n\n`{str(e)[:200]}`")
 
 # ============================================================================
-# 5. FLASK SERVER & KEEP-ALIVE (UPDATED WITH PROPER HEALTH CHECKS)
+# 5. FLASK SERVER & KEEP-ALIVE (UPDATED WITH PROPER HEALTH CHECKS & TEST ROUTE)
 # ============================================================================
 app = Flask(__name__)
 
@@ -374,6 +374,12 @@ def run_now():
     """Endpoint to manually trigger the job via webhook/curl."""
     threading.Thread(target=run_daily_job, daemon=True).start()
     return jsonify({"status": "Job started in background"}), 202
+
+# NEW: Test Telegram endpoint
+@app.route('/test-telegram')
+def test_telegram():
+    send_telegram_summary("🧪 Test Message: अंशू, आपका एनएसई बोट (NSE Bot) टेलीग्राम से बिल्कुल सही कनेक्ट हो गया है!")
+    return jsonify({"status": "Test message sent to Telegram successfully!"}), 200
 
 def keep_alive_loop():
     """Pings the public Render URL to prevent free tier spin-down."""
@@ -417,6 +423,7 @@ if __name__ == '__main__':
     # Start Flask Web Server (Blocks main thread)
     log.info(f"🌐 Starting Flask server on 0.0.0.0:{PORT}...")
     log.info(f" Health check endpoints: GET / and GET /healthz will return 200 OK")
+    log.info(f" Test endpoint available at: GET /test-telegram")
     
     # Run Flask with threaded=True for better concurrency
     app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
