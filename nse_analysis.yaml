@@ -1,0 +1,31 @@
+name: NSE Daily Deal Analysis
+
+on:
+  schedule:
+    # 6:30 PM IST = 1:00 PM UTC (Weekdays)
+    - cron: '0 13 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  analyze-deals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+    - name: Run NSE Deal Analysis
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: python nse_deal_agent_standalone.py --top 5 --min-value 25 --out nse_deal_report.md
+    - name: Upload Report Artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: nse-deal-report
+        path: nse_deal_report.md
