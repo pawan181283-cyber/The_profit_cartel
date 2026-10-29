@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+venv/
+nse_deal_report.md
+nse_deal_report.pdf
+.pytest_cache/
