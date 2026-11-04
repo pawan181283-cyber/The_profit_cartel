@@ -2,13 +2,29 @@
 NSE Bulk & Block Deal Research Agent - STANDALONE SINGLE-FILE VERSION (Gemini Integrated)
 This is a combined, standalone version of the nse_deal_agent package.
 All relative imports have been resolved for single-file execution.
-Anthropic/Claude has been replaced with Google Gemini (google.generativeai).
+Anthropic/Claude has been replaced with Google Gemini (google-genai, the modern SDK).
 
-Version 2.3.0 - WAF Bypass Hardening:
-  * Enhanced session warm-up with multi-stage entry points (homepage, quotes, market-status).
-  * Dynamic, randomized browser headers (Sec-Ch-Ua, User-Agent, Accept-Language).
-  * Advanced WAF marker detection for Cloudflare/Akamai challenge pages.
-  * Robust retry logic with session resets and human-like delays.
+Version 2.4.0 - WAF Reliability & AI Modernization:
+  * Fixed warm-up: a real NSE HTML page is no longer mistaken for a WAF block
+    (the old check rejected the homepage and only "succeeded" on a JSON API).
+  * Fixed retries: blocked API calls now back off and retry instead of raising
+    on the very first attempt (the old raise_on_block short-circuited retries).
+  * Added human-like request pacing (configurable min/max delay) plus an optional
+    per-run request budget, so we stay under Akamai's burst-detection radar.
+  * Optional proxy support via NSE_PROXY / HTTPS_PROXY / HTTP_PROXY env vars.
+    Needed on datacenter IPs (Render/AWS/GCP); unnecessary from a home IP.
+  * Migrated the sentiment module to the modern `google-genai` SDK with a
+    candidate-model fallback chain (legacy `google-generativeai` + gemini-1.5
+    are retired).
+
+Environment variables:
+  GEMINI_API_KEY          - Google Gemini API key (AI sentiment). Optional with --no-ai.
+  TELEGRAM_BOT_TOKEN      - Telegram bot token (alerts). Optional.
+  TELEGRAM_CHAT_ID        - Telegram chat id (alerts). Optional.
+  ENABLE_PDF_EXPORT       - "true" to also render a PDF (needs fpdf2). Optional.
+  NSE_PROXY / HTTPS_PROXY / HTTP_PROXY - optional proxy URL (needed on cloud IPs).
+  NSE_MIN_DELAY / NSE_MAX_DELAY        - seconds between NSE requests (default 1.5/3.5).
+  NSE_MAX_REQUESTS_PER_RUN             - integer guard, 0 = unlimited (default 0).
 
 Usage:
 python nse_deal_agent_standalone.py --help
@@ -49,15 +65,19 @@ except ImportError as exc:
 # GLOBAL LOGGING & CONSTANTS
 # ============================================================================
 log = logging.getLogger("nse_deal_agent")
-__version__ = "Trae AI Production Version 2.3.0-curl_cffi"
+__version__ = "Trae AI Production Version 2.4.0-curl_cffi"
 
 CRORE = 1e7
 RISK_FREE = 0.065  # ~ Indian 91-day T-bill
 DEAL_COLUMNS = ["date", "symbol", "name", "client", "side", "qty", "price", "deal_type"]
 BASE = "https://www.nseindia.com"
 
-# --- UPDATED FOR GEMINI ---
-MODEL = "gemini-1.5-flash"
+# --- GEMINI MODEL CANDIDATES (modern google-genai SDK; tried in order) ---
+GEMINI_MODEL_CANDIDATES = [
+    "gemini-flash-latest",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+]
 SYSTEM = """You are an equity research analyst covering Indian listed companies (NSE).
 Analyze the bulk/block deal activity and technical context provided to judge the market sentiment.
 Pay special attention to WHY large deals happened (promoter stake sale, PE/VC exit, FII/DII accumulation, QIP/OFS, block placement, pledge invocation, index rebalancing, etc.) and how the market interpreted them.
@@ -235,27 +255,80 @@ class NSEAccessBlocked(RuntimeError):
 _WAF_MARKERS = (
     b"just a moment", b"cf-challenge", b"cf_chl", b"cloudflare",
     b"attention required", b"access denied", b"enable javascript and cookies",
-    b"akamai", b"robots", b"noindex", b"nofollow", b"challenge-running",
-    b"checking your browser", b"ray id", b"security check"
+    b"akamai", b"challenge-running", b"checking your browser",
+    b"ray id", b"security check", b"request unsuccessful", b"incident id",
 )
 
-def _looks_like_html(body: bytes) -> bool:
-    """True if the payload is an HTML document or a known WAF challenge page."""
-    head = (body or b"")[:8192].lstrip().lower()
-    if head.startswith((b"<!doctype html", b"<html", b"<head")):
-        return True
+def _has_waf_marker(body: bytes) -> bool:
+    """True if the payload carries a known Cloudflare/Akamai challenge marker.
+
+    Deliberately checks only challenge-specific strings — generic tokens like
+    'robots'/'noindex'/'nofollow' were removed because they appear in ordinary
+    page markup and produced false 'blocked' verdicts.
+    """
+    head = (body or b"")[:8192].lower()
     return any(marker in head for marker in _WAF_MARKERS)
+
+def _looks_like_html(body: bytes) -> bool:
+    """True if the payload is an HTML document (not the JSON/CSV our APIs expect)."""
+    head = (body or b"")[:8192].lstrip().lower()
+    return head.startswith((b"<!doctype html", b"<html", b"<head"))
+
+def _is_api_block(body: bytes) -> bool:
+    """NSE's JSON/CSV API endpoints must never return HTML; if they do, or a WAF
+    challenge marker is present, we are being challenged instead of served data."""
+    return _looks_like_html(body) or _has_waf_marker(body)
 
 class NSEClient:
     """NSE client with curl_cffi for Chrome TLS impersonation and session warming."""
     HISTORICAL_DEALS_PATH = "/api/historicalOR/bulk-block-short-deals"
 
     def __init__(self, timeout: float = 30.0):
-        self.session = cffi_requests.Session(impersonate="chrome")
         self.timeout = timeout
+        proxies = self._resolve_proxies()
+        # curl_cffi presents a real Chrome TLS/JA3 fingerprint. `impersonate="chrome"`
+        # tracks a recent Chrome build — keep curl_cffi updated for newer fingerprints.
+        self.session = cffi_requests.Session(impersonate="chrome", proxies=proxies)
         self._warmed = False
         self.last_fetch_error: str | None = None
-        log.info(f"NSEClient initialized (v{__version__})")
+        # Human-like pacing + optional per-run budget to stay under the WAF radar.
+        self.min_delay = float(os.getenv("NSE_MIN_DELAY", "1.5"))
+        self.max_delay = float(os.getenv("NSE_MAX_DELAY", "3.5"))
+        self.max_requests_per_run = int(os.getenv("NSE_MAX_REQUESTS_PER_RUN", "0"))
+        self._request_count = 0
+        self._last_request_ts = 0.0
+        log.info(
+            f"NSEClient initialized (v{__version__}) | proxy="
+            f"{'configured' if proxies else 'direct'} | pacing={self.min_delay}-{self.max_delay}s"
+        )
+
+    @staticmethod
+    def _resolve_proxies() -> dict | None:
+        """Optional proxy. Required on datacenter IPs (Render/AWS/GCP) where NSE's
+        Akamai WAF 403s regardless of TLS fingerprint; unnecessary from a home IP."""
+        raw = (
+            os.getenv("NSE_PROXY")
+            or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+            or os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
+            or ""
+        ).strip()
+        return {"http": raw, "https": raw} if raw else None
+
+    def _network_get(self, url: str, **kwargs):
+        """Single choke-point for every outbound NSE request: enforces the pacing
+        delay and the optional per-run request budget, then performs the GET."""
+        if self.max_requests_per_run and self._request_count >= self.max_requests_per_run:
+            raise NSEAccessBlocked(
+                f"NSE per-run request budget ({self.max_requests_per_run}) reached — "
+                "stopping to avoid tripping the WAF."
+            )
+        elapsed = time.time() - self._last_request_ts
+        wait = random.uniform(self.min_delay, self.max_delay) - elapsed
+        if wait > 0:
+            time.sleep(wait)
+        self._last_request_ts = time.time()
+        self._request_count += 1
+        return self.session.get(url, timeout=self.timeout, **kwargs)
 
     def _get_dynamic_headers(self, is_navigate: bool = False) -> dict:
         """Generates realistic, randomized Chrome browser headers."""
@@ -299,18 +372,22 @@ class NSEClient:
                 # Update headers for this specific warm-up attempt
                 self.session.headers.update(self._get_dynamic_headers(is_navigate=True))
                 
-                resp = self.session.get(url, timeout=self.timeout)
+                resp = self._network_get(url)
                 status = resp.status_code
                 body = resp.content or b""
 
-                if status == 200 and not _looks_like_html(body):
+                # A navigation page is EXPECTED to be HTML — only an actual WAF
+                # challenge marker means the warm-up failed.
+                if status == 200 and not _has_waf_marker(body):
                     self._warmed = True
-                    log.info(f"NSE session warmed successfully via {url} (Cookies: {len(self.session.cookies)})")
+                    log.info(f"NSE session warmed via {url} (cookies: {len(self.session.cookies)})")
                     time.sleep(random.uniform(1.5, 3.0)) # Mimic human "think time"
                     return True
                 
                 log.warning(f"Warm-up at {url} returned HTTP {status} (HTML/WAF challenge suspected)")
                 time.sleep(random.uniform(2.0, 4.0))
+            except NSEAccessBlocked:
+                raise  # per-run budget exhausted — bubble up, don't keep probing
             except Exception as exc:
                 log.warning(f"Warm-up attempt at {url} failed: {exc}")
                 time.sleep(1)
@@ -332,21 +409,20 @@ class NSEClient:
                 headers = self._get_dynamic_headers(is_navigate=False)
                 headers["Referer"] = "https://www.nseindia.com/"
                 
-                resp = self.session.get(url, params=params, headers=headers, timeout=self.timeout)
+                resp = self._network_get(url, params=params, headers=headers)
                 status = resp.status_code
                 ctype = (resp.headers.get("Content-Type") or "").lower()
                 body = resp.content or b""
 
-                # Check for WAF block even on 200 OK
-                if status in (401, 403, 429) or _looks_like_html(body):
+                # NSE's JSON/CSV APIs must never return HTML — if they do, or a WAF
+                # marker is present, we're being challenged instead of served.
+                if status in (401, 403, 429) or _is_api_block(body):
                     detail = f"NSE_ACCESS_BLOCKED: HTTP {status} from {path}"
                     self.last_fetch_error = detail
-                    log.error(f"{detail}. Possible WAF challenge.")
-                    self._warmed = False # Force fresh warm-up on next try
-                    self.session.cookies.clear() # Clear potentially tainted cookies
-                    if raise_on_block:
-                        raise NSEAccessBlocked(detail, status=status, content_type=ctype)
-                    last_error = detail
+                    log.error(f"{detail} (attempt {attempt + 1}/{retries}). Possible WAF challenge.")
+                    self._warmed = False          # force a fresh warm-up on retry
+                    self.session.cookies.clear()  # drop possibly tainted cookies
+                    last_error = detail           # NOTE: retry first, raise only at the end
                 elif status >= 500:
                     last_error = f"NSE server error: HTTP {status}"
                 else:
@@ -362,6 +438,11 @@ class NSEClient:
                 time.sleep((2 ** attempt) + random.uniform(1.0, 2.5))
                 
         self.last_fetch_error = last_error or f"Failed to fetch {path}"
+        # Only surface a hard block AFTER every retry has been exhausted.
+        if raise_on_block and last_error and (
+            "NSE_ACCESS_BLOCKED" in last_error or "budget" in last_error.lower()
+        ):
+            raise NSEAccessBlocked(last_error)
         return None
 
     def get_json(self, path: str, params: dict | None = None, retries: int = 3, raise_on_block: bool = False) -> Any:
@@ -978,43 +1059,53 @@ def research_sentiment(symbol: str, company: str, deal_context: str, technical_c
                        client=None, max_searches: int = 6) -> dict:
     """Returns the parsed JSON dict, or {"error": ...} if Gemini is unavailable."""
     try:
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types as genai_types
     except ImportError:
-        return {"error": "google-generativeai package not installed - run `pip install google-generativeai`"}
-    
+        return {"error": "google-genai package not installed - run `pip install google-genai`"}
+
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         return {"error": "GEMINI_API_KEY environment variable not set. Please set it to use AI sentiment analysis."}
-    
+
+    user_prompt = (
+        f"Stock: {company} (NSE: {symbol})\n\n"
+        f"Bulk/block deal activity:\n{deal_context}\n\n"
+        f"Price/technical context computed from exchange data:\n{technical_context}\n\n"
+        "Analyze the news flow and sentiment for this stock now, explain the deal, and return the JSON."
+    )
+
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            MODEL,
-            system_instruction=SYSTEM
-        )
-        
-        user_prompt = (
-            f"Stock: {company} (NSE: {symbol})\n\n"
-            f"Bulk/block deal activity:\n{deal_context}\n\n"
-            f"Price/technical context computed from exchange data:\n{technical_context}\n\n"
-            "Analyze the news flow and sentiment for this stock now, explain the deal, and return the JSON."
-        )
-        
-        response = model.generate_content(
-            user_prompt,
-            generation_config={
-                "temperature": 0.2,
-                "response_mime_type": "application/json"
-            }
-        )
-        
-        parsed = json.loads(response.text)
-        return parsed
-        
-    except json.JSONDecodeError:
-        return {"error": "Could not parse sentiment JSON", "raw": response.text[-2000:]}
+        gen_client = genai.Client(api_key=api_key)
     except Exception as e:
-        return {"error": f"Gemini API error: {str(e)}"}
+        return {"error": f"Could not create Gemini client: {e}"}
+
+    # Try each candidate model in order (modern SDK; gemini-1.5 is retired).
+    last_error = None
+    for model_id in GEMINI_MODEL_CANDIDATES:
+        try:
+            response = gen_client.models.generate_content(
+                model=model_id,
+                contents=user_prompt,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=SYSTEM,
+                    temperature=0.2,
+                    response_mime_type="application/json",
+                ),
+            )
+            text = (getattr(response, "text", "") or "").strip()
+            if not text:
+                last_error = f"{model_id}: empty response"
+                continue
+            return json.loads(text)
+        except json.JSONDecodeError:
+            last_error = f"{model_id}: could not parse JSON response"
+            continue
+        except Exception as e:
+            last_error = f"{model_id}: {e}"
+            continue
+
+    return {"error": f"Gemini API error: {last_error}"}
 
 # ============================================================================
 # 5. DEMO MODULE
