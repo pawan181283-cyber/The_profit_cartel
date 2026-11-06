@@ -3,58 +3,52 @@ NSE Bulk & Block Deal Research Agent - STANDALONE SINGLE-FILE VERSION (Gemini In
 This is a combined, standalone version of the nse_deal_agent package.
 All relative imports have been resolved for single-file execution.
 Anthropic/Claude has been replaced with Google Gemini (google-genai, the modern SDK).
-
 Version 2.6.0 - Advanced WAF Bypass & Bhavcopy Fallback:
-  * Advanced header rotation: browser fingerprints, Sec-Fetch-* headers, and 
-    Referer chain management to better mimic human navigation.
-  * Bhavcopy/Archive Fallback: if the primary API is blocked by Akamai, the client
-    automatically switches to public CSV/archives (nsearchives.nseindia.com)
-    which are often less aggressively guarded.
-  * Hardened CSV validation: fixed case-sensitivity bugs in column detection
-    to ensure real data isn't mistaken for a WAF block.
-
+ Advanced header rotation: browser fingerprints, Sec-Fetch-* headers, and
+Referer chain management to better mimic human navigation.
+ Bhavcopy/Archive Fallback: if the primary API is blocked by Akamai, the client
+automatically switches to public CSV/archives (nsearchives.nseindia.com)
+which are often less aggressively guarded.
+ Hardened CSV validation: fixed case-sensitivity bugs in column detection
+to ensure real data isn't mistaken for a WAF block.
 Version 2.5.0 - False-200 Hardening, Debug Capture & Free-Proxy Fallback:
-  * HARDENED false-200 detection: an Akamai block page served with HTTP 200 is now
-    caught by (a) enforcing Content-Type per endpoint, (b) scanning the body for
-    an expanded Akamai/Cloudflare marker set, (c) detecting HTML anywhere near the
-    start (not just at byte 0), (d) checking the Server header and (e) inspecting
-    the Akamai Bot Manager cookie state (_abck/bm_sz/ak_bmsc).
-  * DEBUG CAPTURE: set NSE_DEBUG_DUMP to a folder and every blocked response
-    (status, headers, cookies, full body) is written there for fingerprinting.
-  * FREE PROXY support via NSE_PROXY (http://, https://, socks5://, socks5h://).
-    A bare host:port is treated as http. Fully optional — unset means DIRECT.
-  * DIRECT FALLBACK: if the proxy fails to connect, or keeps getting blocked, the
-    client automatically retries going DIRECT for the rest of the run.
-
+ HARDENED false-200 detection: an Akamai block page served with HTTP 200 is now
+caught by (a) enforcing Content-Type per endpoint, (b) scanning the body for
+an expanded Akamai/Cloudflare marker set, (c) detecting HTML anywhere near the
+start (not just at byte 0), (d) checking the Server header and (e) inspecting
+the Akamai Bot Manager cookie state (_abck/bm_sz/ak_bmsc).
+ DEBUG CAPTURE: set NSE_DEBUG_DUMP to a folder and every blocked response
+(status, headers, cookies, full body) is written there for fingerprinting.
+ FREE PROXY support via NSE_PROXY (http://, https://, socks5://, socks5h://).
+A bare host:port is treated as http. Fully optional — unset means DIRECT.
+ DIRECT FALLBACK: if the proxy fails to connect, or keeps getting blocked, the
+client automatically retries going DIRECT for the rest of the run.
 Version 2.4.0 - WAF Reliability & AI Modernization:
-  * Fixed warm-up: a real NSE HTML page is no longer mistaken for a WAF block
-    (the old check rejected the homepage and only "succeeded" on a JSON API).
-  * Fixed retries: blocked API calls now back off and retry instead of raising
-    on the very first attempt (the old raise_on_block short-circuited retries).
-  * Added human-like request pacing (configurable min/max delay) plus an optional
-    per-run request budget, so we stay under Akamai's burst-detection radar.
-  * Optional proxy support via NSE_PROXY / HTTPS_PROXY / HTTP_PROXY env vars.
-    Needed on datacenter IPs (Render/AWS/GCP); unnecessary from a home IP.
-  * Migrated the sentiment module to the modern `google-genai` SDK with a
-    candidate-model fallback chain (legacy `google-generativeai` + gemini-1.5
-    are retired).
-
+ Fixed warm-up: a real NSE HTML page is no longer mistaken for a WAF block
+(the old check rejected the homepage and only "succeeded" on a JSON API).
+ Fixed retries: blocked API calls now back off and retry instead of raising
+on the very first attempt (the old raise_on_block short-circuited retries).
+ Added human-like request pacing (configurable min/max delay) plus an optional
+per-run request budget, so we stay under Akamai's burst-detection radar.
+ Optional proxy support via NSE_PROXY / HTTPS_PROXY / HTTP_PROXY env vars.
+Needed on datacenter IPs (Render/AWS/GCP); unnecessary from a home IP.
+ Migrated the sentiment module to the modern `google-genai` SDK with a
+candidate-model fallback chain (legacy `google-generativeai` + gemini-1.5
+are retired).
 Environment variables:
-  GEMINI_API_KEY          - Google Gemini API key (AI sentiment). Optional with --no-ai.
-  TELEGRAM_BOT_TOKEN      - Telegram bot token (alerts). Optional.
-  TELEGRAM_CHAT_ID        - Telegram chat id (alerts). Optional.
-  ENABLE_PDF_EXPORT       - "true" to also render a PDF (needs fpdf2). Optional.
-  NSE_PROXY / HTTPS_PROXY / HTTP_PROXY - optional proxy URL (free SOCKS5/HTTP OK).
-  NSE_DEBUG_DUMP          - folder to save blocked responses (headers+body+cookies).
-  NSE_MIN_DELAY / NSE_MAX_DELAY        - seconds between NSE requests (default 1.5/3.5).
-  NSE_MAX_REQUESTS_PER_RUN             - integer guard, 0 = unlimited (default 0).
-
+GEMINI_API_KEY          - Google Gemini API key (AI sentiment). Optional with --no-ai.
+TELEGRAM_BOT_TOKEN      - Telegram bot token (alerts). Optional.
+TELEGRAM_CHAT_ID        - Telegram chat id (alerts). Optional.
+ENABLE_PDF_EXPORT       - "true" to also render a PDF (needs fpdf2). Optional.
+NSE_PROXY / HTTPS_PROXY / HTTP_PROXY - optional proxy URL (free SOCKS5/HTTP OK).
+NSE_DEBUG_DUMP          - folder to save blocked responses (headers+body+cookies).
+NSE_MIN_DELAY / NSE_MAX_DELAY        - seconds between NSE requests (default 1.5/3.5).
+NSE_MAX_REQUESTS_PER_RUN             - integer guard, 0 = unlimited (default 0).
 Usage:
 python nse_deal_agent_standalone.py --help
 python nse_deal_agent_standalone.py --top 5 --min-value 25 --out nse_deal_report.md
 """
 from __future__ import annotations
-
 import argparse
 import csv
 import datetime as dt
@@ -69,11 +63,9 @@ import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any
-
 import numpy as np
 import pandas as pd
 import requests
-
 # curl_cffi provides a real Chrome TLS/JA3 fingerprint, so NSE's Cloudflare/Akamai
 # WAF does not answer with an HTTP 403 HTML challenge page.
 try:
@@ -89,7 +81,6 @@ except ImportError as exc:
 # ============================================================================
 log = logging.getLogger("nse_deal_agent")
 __version__ = "Trae AI Production Version 2.6.0-curl_cffi"
-
 CRORE = 1e7
 RISK_FREE = 0.065  # ~ Indian 91-day T-bill
 DEAL_COLUMNS = ["date", "symbol", "name", "client", "side", "qty", "price", "deal_type"]
@@ -292,7 +283,6 @@ _WAF_MARKERS = (
     b"web page blocked", b"potential bot", b"suspicious activity",
     b"security check", b"request unsuccessful", b"incident id",
 )
-
 # HTML signatures searched ANYWHERE near the start of the body. A challenge page
 # often begins with a BOM, a comment or a <script> — not literally "<html".
 _HTML_SIGNATURES = (b"<html", b"<!doctype", b"<head", b"<body", b"<script", b"<meta")
@@ -316,7 +306,6 @@ def _classify_block(resp) -> str | None:
     ctype = (resp.headers.get("Content-Type") or "").lower()
     server = (resp.headers.get("Server") or "").lower()
     body = resp.content or b""
-
     if status in (401, 403, 405, 429):
         return f"HTTP {status} (explicit block / rate-limit)"
     # A JSON/CSV data endpoint must never answer with HTML — whatever the status.
@@ -412,7 +401,6 @@ class NSEClient:
     @staticmethod
     def _resolve_proxies() -> dict | None:
         """Free-proxy support via NSE_PROXY / HTTPS_PROXY / HTTP_PROXY.
-
         Accepts http(s)://, socks5://, socks5h:// or socks4:// URLs; a bare
         'host:port' is treated as http. NSE's Akamai WAF blocks datacenter IPs
         regardless of TLS fingerprint, so a clean (ideally residential) egress is
@@ -449,7 +437,6 @@ class NSEClient:
             time.sleep(wait)
         self._last_request_ts = time.time()
         self._request_count += 1
-
         if self._proxy_active and self.proxies:
             try:
                 return self.session.get(url, timeout=self.timeout, proxies=self.proxies, **kwargs)
@@ -463,7 +450,6 @@ class NSEClient:
         chrome_ver = random.choice(["124.0.0.0", "123.0.0.0", "122.0.0.0", "121.0.0.0"])
         major_ver = chrome_ver.split(".")[0]
         ua = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_ver} Safari/537.36"
-        
         h = {
             "User-Agent": ua,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" if is_navigate else "application/json, text/plain, */*",
@@ -486,29 +472,24 @@ class NSEClient:
         """Establish a real browser session by visiting multiple NSE entry points."""
         if self._warmed:
             return True
-        
         entry_points = [
             "https://www.nseindia.com/",
             "https://www.nseindia.com/get-quotes/equity?symbol=SBIN",
             "https://www.nseindia.com/market-data/live-equity-market",
             "https://www.nseindia.com/api/marketStatus"
         ]
-        
         log.info("Warming up NSE session (harvesting cookies)...")
         for url in entry_points:
             try:
                 # Update headers for this specific warm-up attempt, using the referer chain
                 headers = self._get_dynamic_headers(is_navigate=True, referer=self._last_referer)
                 self.session.headers.update(headers)
-                
                 resp = self._network_get(url)
                 status = resp.status_code
                 body = resp.content or b""
-
                 # If successful, update the referer for the next request
                 if status == 200:
                     self._last_referer = url
-
                 # A navigation page is EXPECTED to be HTML — so unlike the data
                 # endpoints we do NOT flag HTML here. Only an explicit block status
                 # or a real WAF challenge marker means the warm-up failed.
@@ -530,33 +511,27 @@ class NSEClient:
                     return True
                 else:
                     log.warning(f"Warm-up at {url} returned HTTP {status}")
-
                 time.sleep(random.uniform(2.0, 4.0))
             except NSEAccessBlocked:
                 raise  # per-run budget exhausted — bubble up, don't keep probing
             except Exception as exc:
                 log.warning(f"Warm-up attempt at {url} failed: {exc}")
                 time.sleep(1)
-
         self.last_fetch_error = "NSE warm-up failed across all entry points. WAF block likely."
         return False
 
     def _request(self, path: str, params: dict | None = None, retries: int = 3, raise_on_block: bool = False):
         url = f"{BASE}{path}"
         last_error = None
-        
         for attempt in range(retries):
             try:
                 if not self._warm():
                     time.sleep(2)
                     continue
-
                 # Use dynamic headers for every API request with correct referer chain
                 headers = self._get_dynamic_headers(is_navigate=False, referer=self._last_referer)
-                
                 resp = self._network_get(url, params=params, headers=headers)
                 status = resp.status_code
-
                 # If successful, update the referer (though for APIs we usually stick 
                 # to a main page referer, it helps to vary it sometimes).
                 if status == 200:
@@ -565,11 +540,9 @@ class NSEClient:
                         self._last_referer = "https://www.nseindia.com/"
                     else:
                         self._last_referer = url
-
                 # Single source of truth: catches a false HTTP-200 WAF page as well
                 # as explicit 401/403/429 blocks and empty Akamai-edge responses.
                 reason = _classify_block(resp)
-
                 if reason:
                     detail = f"NSE_ACCESS_BLOCKED: {reason} (HTTP {status}) from {path}"
                     self.last_fetch_error = detail
@@ -596,10 +569,8 @@ class NSEClient:
                 last_error = str(exc)
                 log.warning(f"Request attempt {attempt+1}/{retries} failed for {path}: {exc}")
                 self._warmed = False 
-                
             if attempt < retries - 1:
                 time.sleep((2 ** attempt) + random.uniform(1.0, 2.5))
-                
         self.last_fetch_error = last_error or f"Failed to fetch {path}"
         # Only surface a hard block AFTER every retry has been exhausted.
         if raise_on_block and last_error and (
@@ -612,7 +583,6 @@ class NSEClient:
         resp = self._request(path, params, retries, raise_on_block=raise_on_block)
         if resp is None:
             return None
-            
         body = resp.content or b""
         try:
             return resp.json()
@@ -634,14 +604,12 @@ class NSEClient:
         # Archives often host the latest day's file at these locations
         url = f"https://www.nseindia.com/content/equities/{kind.lower()}.csv"
         alt_url = f"https://nsearchives.nseindia.com/content/equities/{kind.lower()}.csv"
-        
         log.info(f"Attempting fallback to public archive: {url}")
         for target in [url, alt_url]:
             try:
                 # Direct CSV request with navigation headers to mimic a user download
                 headers = self._get_dynamic_headers(is_navigate=True)
                 resp = self.session.get(target, timeout=self.timeout, headers=headers)
-                
                 if resp.status_code == 200 and not _classify_block(resp):
                     text = resp.content.decode("utf-8-sig", errors="replace").strip()
                     if text:
@@ -654,14 +622,12 @@ class NSEClient:
                             return normalize_deal_rows(raw.fillna("").to_dict("records"), kind.upper())
             except Exception as e:
                 log.warning(f"Archive fallback failed for {target}: {e}")
-        
         return pd.DataFrame()
 
     def deals(self, start: dt.date, end: dt.date, kind: str = "bulk") -> pd.DataFrame:
         """Fetch historical deal data; fallback to archives on WAF block."""
         if kind.lower() not in {"bulk", "block"}:
             raise ValueError("kind must be 'bulk' or 'block'")
-            
         self.last_fetch_error = None
         params = {
             "optionType": f"{kind.lower()}_deals",
@@ -669,27 +635,22 @@ class NSEClient:
             "to": _nse_date(end),
             "csv": "true",
         }
-        
         try:
             resp = self._request(self.HISTORICAL_DEALS_PATH, params, retries=3, raise_on_block=True)
         except NSEAccessBlocked:
             log.warning(f"Primary API for {kind} deals blocked. Switching to archive fallback...")
             return self._fetch_archive_deals(kind)
-
         if resp is None:
             return self._fetch_archive_deals(kind)
-
         content = resp.content or b""
         ctype = (resp.headers.get("Content-Type") or "").lower()
         head = content.lstrip()
-
         # Classification check for false 200s
         reason = _classify_block(resp)
         if reason:
             log.warning(f"False-200 block detected ({reason}). Switching to archive fallback...")
             _dump_block(resp, self.HISTORICAL_DEALS_PATH, reason)
             return self._fetch_archive_deals(kind)
-
         try:
             if "json" in ctype or head.startswith((b"{", b"[")):
                 payload = resp.json()
@@ -697,26 +658,20 @@ class NSEClient:
                 if not isinstance(rows, list):
                     return self._fetch_archive_deals(kind)
                 return normalize_deal_rows(rows, kind.upper())
-
             text = content.decode("utf-8-sig", errors="replace").strip()
             if not text:
                 return self._fetch_archive_deals(kind)
-
             raw = pd.read_csv(io.StringIO(text), dtype=str)
             raw.columns = [str(c).strip().upper() for c in raw.columns]
-
             # Structural validation: a real NSE deal CSV carries at least one of these.
             expected = {"BD_SYMBOL", "BD_DT_DATE", "BD_QTY_TRD", "BD_TP_WATP",
                         "SYMBOL", "DATE", "QUANTITY TRADED", "TRADE PRICE / WGHT. AVG. PRICE",
                         "SECURITY NAME", "CLIENT NAME", "BUY / SELL"}
-            
             if raw.empty or not (expected & set(raw.columns)):
                 log.warning("CSV structure unexpected. Switching to archive fallback...")
                 _dump_block(resp, self.HISTORICAL_DEALS_PATH, "Unexpected CSV structure")
                 return self._fetch_archive_deals(kind)
-
             return normalize_deal_rows(raw.fillna("").to_dict("records"), kind.upper())
-
         except Exception as exc:
             log.warning(f"Primary parse failed ({exc}). Switching to archive fallback...")
             return self._fetch_archive_deals(kind)
@@ -832,10 +787,15 @@ def yfinance_history(ticker: str, start: dt.date, end: dt.date) -> pd.DataFrame:
 def summarize_deals(deals: pd.DataFrame, min_value_cr: float = 0.0) -> pd.DataFrame:
     if deals.empty:
         return pd.DataFrame()
+    
     d = deals.copy()
     d["qty"] = pd.to_numeric(d["qty"], errors="coerce")
     d["price"] = pd.to_numeric(d["price"], errors="coerce")
     d = d.dropna(subset=["qty", "price"])
+    
+    if d.empty:
+        return pd.DataFrame()
+    
     d["value_cr"] = d["qty"] * d["price"] / CRORE
     d["signed_value_cr"] = np.where(d["side"] == "BUY", d["value_cr"], -d["value_cr"])
     d["signed_qty"] = np.where(d["side"] == "BUY", d["qty"], -d["qty"])
@@ -869,13 +829,31 @@ def summarize_deals(deals: pd.DataFrame, min_value_cr: float = 0.0) -> pd.DataFr
                 "top_sellers": top_clients(g, "SELL"),
             }
         )
+    
+    if not rows:
+        return pd.DataFrame()
+    
     out = pd.DataFrame(rows)
-    out["deal_bias"] = np.select(
-        [out["net_value_cr"] > 0.1 * out["gross_value_cr"], out["net_value_cr"] < -0.1 * out["gross_value_cr"]],
-        ["NET BUY", "NET SELL"],
-        "MIXED / CHURN",
-    )
+    
+    # Ensure columns exist and handle NaN values
+    out["net_value_cr"] = pd.to_numeric(out["net_value_cr"], errors="coerce").fillna(0.0)
+    out["gross_value_cr"] = pd.to_numeric(out["gross_value_cr"], errors="coerce").fillna(0.0)
+    
+    # Safe deal bias calculation with explicit column checks
+    try:
+        out["deal_bias"] = np.select(
+            [out["net_value_cr"] > 0.1 * out["gross_value_cr"], 
+             out["net_value_cr"] < -0.1 * out["gross_value_cr"]],
+            ["NET BUY", "NET SELL"],
+            default="MIXED / CHURN"
+        )
+    except KeyError:
+        # Fallback if columns don't exist
+        out["deal_bias"] = "MIXED / CHURN"
+    
+    # Filter by minimum value
     out = out[out["gross_value_cr"] >= min_value_cr]
+    
     return out.sort_values("gross_value_cr", ascending=False).reset_index(drop=True)
 
 def add_indicators(px: pd.DataFrame) -> pd.DataFrame:
@@ -950,13 +928,11 @@ class TrendView:
 def trend_view(df: pd.DataFrame, deal_bias: str | None = None, post: dict | None = None) -> TrendView:
     last = df.iloc[-1]
     pts: list[tuple[int, str]] = []
-
     def add(cond: bool, w: int, yes: str, no: str | None = None) -> None:
         if cond:
             pts.append((w, yes))
         elif no:
             pts.append((-w, no))
-
     c = last["close"]
     if not np.isnan(last["sma20"]):
         add(c > last["sma20"], 10, "Close above 20-DMA", "Close below 20-DMA")
@@ -991,7 +967,6 @@ def trend_view(df: pd.DataFrame, deal_bias: str | None = None, post: dict | None
         vr = post.get("deal_day_vol_ratio")
         if vr is not None and vr == vr and vr > 2:
             pts.append((0, f"Deal-day volume {vr:.1f}x the 20-day average"))
-    
     score = int(max(-100, min(100, sum(w for w, _ in pts))))
     if score >= 40:
         label = "BULLISH"
@@ -1146,14 +1121,13 @@ def build_trade_plan(df: pd.DataFrame, trend_score: int, chain: ChainStats | Non
                 f"exit or trail a stop above {last['swing_high10']:.2f}.",
                 invalidation=f"Bearish view fails on a daily close above {last['swing_high10']:.2f}",
             )
-    else:
-        return TradePlan(
-            "NO TRADE",
-            f"Trend score {trend_score} is inside the -15..+15 neutral band - no directional edge. "
-            "Wait for a breakout above the 10-day high or breakdown below the 10-day low.",
-            invalidation=f"Watch {last['swing_high10']:.2f} (breakout) / {last['swing_low10']:.2f} (breakdown)",
-        )
-
+        else:
+            return TradePlan(
+                "NO TRADE",
+                f"Trend score {trend_score} is inside the -15..+15 neutral band - no directional edge. "
+                "Wait for a breakout above the 10-day high or breakdown below the 10-day low.",
+                invalidation=f"Watch {last['swing_high10']:.2f} (breakout) / {last['swing_low10']:.2f} (breakdown)",
+            )
     if direction == "LONG":
         entry_lo, entry_hi = close - 0.3 * atr, close + 0.2 * atr
         entry = close
@@ -1176,7 +1150,6 @@ def build_trade_plan(df: pd.DataFrame, trend_score: int, chain: ChainStats | Non
         t1, t2 = entry - 1.5 * risk, entry - 3 * risk
         if chain and t1 < chain.put_wall <= entry - risk:
             t1 = chain.put_wall
-
     plan = TradePlan(
         direction=direction,
         rationale=f"Trend score {trend_score:+d}. ATR(14) = {atr:.2f}.",
@@ -1282,23 +1255,23 @@ def research_sentiment(symbol: str, company: str, deal_context: str, technical_c
         from google.genai import types as genai_types
     except ImportError:
         return {"error": "google-genai package not installed - run `pip install google-genai`"}
-
+    
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         return {"error": "GEMINI_API_KEY environment variable not set. Please set it to use AI sentiment analysis."}
-
+    
     user_prompt = (
         f"Stock: {company} (NSE: {symbol})\n\n"
         f"Bulk/block deal activity:\n{deal_context}\n\n"
         f"Price/technical context computed from exchange data:\n{technical_context}\n\n"
         "Analyze the news flow and sentiment for this stock now, explain the deal, and return the JSON."
     )
-
+    
     try:
         gen_client = genai.Client(api_key=api_key)
     except Exception as e:
         return {"error": f"Could not create Gemini client: {e}"}
-
+    
     # Try each candidate model in order (modern SDK; gemini-1.5 is retired).
     last_error = None
     for model_id in GEMINI_MODEL_CANDIDATES:
@@ -1323,7 +1296,6 @@ def research_sentiment(symbol: str, company: str, deal_context: str, technical_c
         except Exception as e:
             last_error = f"{model_id}: {e}"
             continue
-
     return {"error": f"Gemini API error: {last_error}"}
 
 # ============================================================================
@@ -1479,7 +1451,6 @@ class DealResearchAgent:
         if px.empty or len(px) < 30:
             log.warning("%s: not enough price history, skipping", sym)
             return None
-        
         px = add_indicators(px)
         deal_px = row["avg_buy_price"] if row["deal_bias"] == "NET BUY" else row["avg_sell_price"]
         post = post_deal_behaviour(px, row["first_deal"], deal_px, benchmark)
@@ -1500,7 +1471,6 @@ class DealResearchAgent:
                 notes.append("Option chain unavailable - options section skipped.")
         else:
             notes.append("Not in NSE's F&O list - only cash-market (delivery/intraday) trades are possible.")
-        
         senti: dict = {}
         if self.cfg.use_claude:
             senti = research_sentiment(
@@ -1511,7 +1481,6 @@ class DealResearchAgent:
             )
             if "error" in senti:
                 notes.append(f"Sentiment research skipped: {senti['error']}")
-        
         s_score = senti.get("sentiment_score") if isinstance(senti.get("sentiment_score"), (int, float)) else None
         final = trend.score if s_score is None else round(0.6 * trend.score + 0.4 * s_score)
         plan = build_trade_plan(px, final, chain, lot, eligible, self.cfg.capital, self.cfg.risk_pct)
@@ -1526,14 +1495,12 @@ class DealResearchAgent:
         fno = self.nse.fno_symbols()
         benchmark = self.nse.index_history(self.cfg.start - dt.timedelta(days=10), dt.date.today())
         reports = []
-        
         for row in summary.head(self.cfg.top_n).to_dict("records"):
             log.info("Analysing %s", row["symbol"])
             r = self.analyse_symbol(row, fno, benchmark)
             if r:
                 reports.append(r)
             time.sleep(2) # QUOTA SAFEGUARD: Prevent hitting the 15 RPM limit on Gemini Free Tier
-            
         return summary, reports
 
 def _deal_context(row: dict, post: dict) -> str:
@@ -1582,7 +1549,6 @@ def render(summary: pd.DataFrame, reports: list[StockReport], start: dt.date, en
     if summary.empty:
         out.append("No bulk/block deals matched the filters.")
         return "\n".join(out)
-    
     out += ["## Deal scan", "",
             "| Symbol | Deals | Buy ₹Cr | Sell ₹Cr | Net ₹Cr | Bias |",
             "|---|---:|---:|---:|---:|---|"]
@@ -1590,7 +1556,6 @@ def render(summary: pd.DataFrame, reports: list[StockReport], start: dt.date, en
         out.append(f"| {r.symbol} | {r.deals} | {r.buy_value_cr:,.1f} | {r.sell_value_cr:,.1f} | "
                    f"{r.net_value_cr:+,.1f} | {r.deal_bias} |")
     out.append("")
-    
     if reports:
         out += ["## Verdict board", "",
                 "| Symbol | Since deal | Technical | News | Final view | F&O | Trade |",
@@ -1604,7 +1569,6 @@ def render(summary: pd.DataFrame, reports: list[StockReport], start: dt.date, en
                        f"{r.trend.score:+d} | {news} | **{r.final_label}** ({r.final_score:+d}) | "
                        f"{'Yes' if r.fno_eligible else 'No'} | {trade} |")
         out.append("")
-    
     for r in reports:
         out += _stock_section(r)
     return "\n".join(out)
@@ -1620,7 +1584,6 @@ def _stock_section(r: StockReport) -> list[str]:
         o.append(f"- Buyers: {d['top_buyers']}")
     if d.get("top_sellers"):
         o.append(f"- Sellers: {d['top_sellers']}")
-    
     o += ["", "### 2. How the stock behaved after the deal", ""]
     if p:
         o += [
@@ -1639,13 +1602,11 @@ def _stock_section(r: StockReport) -> list[str]:
                      f"{_f(p['relative_strength_pct'], '{:+.1f} pts')}")
     else:
         o.append("- No sessions since the deal yet.")
-    
     o += ["", f"### 3. Technical trend: {r.trend.label} ({r.trend.score:+d})", "",
           f"Close {_f(L['close'])} | 20-DMA {_f(L['sma20'])} | 50-DMA {_f(L['sma50'])} | 200-DMA {_f(L['sma200'])} | "
           f"RSI {_f(L['rsi14'], '{:.0f}')} | ATR {_f(L['atr14'])} | 52w {_f(L['low52w'])}–{_f(L['high52w'])}", ""]
     o += [f"- {x}" for x in r.trend.reasons]
     o += ["", "### 4. News & market sentiment", ""]
-    
     s = r.sentiment
     if s and "error" not in s:
         o.append(f"**{s.get('sentiment', '?')} ({s.get('sentiment_score', '?')})** — {s.get('summary', '')}")
@@ -1660,7 +1621,6 @@ def _stock_section(r: StockReport) -> list[str]:
                 o.append(f"- {h.get('date', '')} — [{h.get('title', '')}]({h.get('url', '')}) ({h.get('source', '')})")
     else:
         o.append("_Not run._" if not s else f"_Unavailable: {s.get('error')}_")
-    
     o += ["", "### 5. F&O analysis", ""]
     if not r.fno_eligible:
         o.append("Not in the F&O segment — futures/options trading is not possible on this stock.")
@@ -1673,7 +1633,6 @@ def _stock_section(r: StockReport) -> list[str]:
                   f"- Max pain {c.max_pain:g}",
                   f"- Resistance (highest call OI) {c.call_wall:g}; fresh call writing at {c.call_oi_build:g}",
                   f"- Support (highest put OI) {c.put_wall:g}; fresh put writing at {c.put_oi_build:g}"]
-    
     pl = r.plan
     o += ["", f"### 6. Trade plan: {pl.direction}", "", pl.rationale]
     if pl.entry:
@@ -1692,7 +1651,6 @@ def _stock_section(r: StockReport) -> list[str]:
                     f"{k.replace('_', ' ')}: {_v(v)}" for k, v in idea.items() if k != "strategy"))
     else:
         o += ["", f"- {pl.invalidation}"]
-    
     if r.notes:
         o += ["", "_Notes:_"] + [f"- {n}" for n in r.notes]
     o.append("")
@@ -1762,7 +1720,6 @@ def main(argv: list[str] | None = None) -> int:
                 deals = pd.concat([bulk_df, block_df], ignore_index=True)
             else:
                 deals = bulk_df
-                
             if deals.empty:
                 log.warning("⚠️ NSE APIs returned no data. This may indicate temporary API downtime, weekend markets, or strict WAF blocking.")
             else:
@@ -1783,6 +1740,7 @@ def main(argv: list[str] | None = None) -> int:
         summary, reports = DealResearchAgent(cfg, nse).run(deals)
         
     md = render(summary, reports, start, end)
+    
     if summary.empty and not a.deals_csv and not a.demo:
         fetch_error = getattr(nse, "last_fetch_error", None)
         if fetch_error:
@@ -1793,7 +1751,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             md = md.replace("No bulk/block deals matched the filters.",
                             "**DATA FETCH SUCCEEDED, BUT NO DEAL ROWS WERE RETURNED for this period.**")
-    
+
     try:
         with open(a.out, "w", encoding="utf-8") as f:
             f.write(md)
